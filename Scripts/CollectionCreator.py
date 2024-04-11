@@ -2,6 +2,8 @@ import os
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
+from tqdm import tqdm
+from threading import Thread
 
 class CustomCollectionGenerator:
     def __init__(self, master):
@@ -20,9 +22,11 @@ class CustomCollectionGenerator:
         self.collection_label.pack(pady=10)
 
         self.collection_var = tk.StringVar()
-        self.collection_dropdown = ttk.Combobox(master, textvariable=self.collection_var)
-        self.update_collection_dropdown()
+        self.collection_dropdown = ttk.Combobox(master, textvariable=self.collection_var, postcommand=self.update_collection_dropdown)
         self.collection_dropdown.pack(pady=10)
+
+        self.collection_count_label = ttk.Label(master, text="Number of Games:")
+        self.collection_count_label.pack(pady=5)
 
         self.new_collection_label = ttk.Label(master, text="Create New Collection:")
         self.new_collection_label.pack(pady=10)
@@ -44,11 +48,14 @@ class CustomCollectionGenerator:
 
         # Make the "Enter Extensions" box wider
         self.extensions_entry = ttk.Entry(master, width=50)
-        self.extensions_entry.insert(0, ".zip,.7z,.chd,.iso,.wad,.rvz,.sfc,.3ds,.nsp,.xci,.m3u")
+        self.extensions_entry.insert(0, ".zip,.7z,.chd,.iso,.cso,.wad,.rvz,.sfc,.3ds,.nsp,.xci,.m3u,.z64,.zar,.bat")
         self.extensions_entry.pack(pady=10)
 
         self.search_button = ttk.Button(master, text="Search", command=self.search_and_update_collection)
         self.search_button.pack(pady=20)
+
+        self.progress_bar = ttk.Progressbar(master, orient='horizontal', length=300, mode='determinate')
+        self.progress_bar.pack(pady=10)
 
         self.roms_path_label = ttk.Label(master, text=f"ROMs Folder Path: {self.roms_folder}")
         self.roms_path_label.pack(pady=5)
@@ -56,10 +63,25 @@ class CustomCollectionGenerator:
         self.collection_path_label = ttk.Label(master, text=f"Collection Folder Path: {self.collection_folder}")
         self.collection_path_label.pack(pady=5)
 
+        # Bind refresh action to dropdown menu selection
+        self.collection_dropdown.bind("<<ComboboxSelected>>", self.update_collection_count)
+
     def update_collection_dropdown(self):
         # List all .cfg files in the collection folder and sort them
         collection_files = sorted([f for f in os.listdir(self.collection_folder) if f.endswith(".cfg")])
         self.collection_dropdown['values'] = collection_files
+
+    def update_collection_count(self, event=None):
+        selected_collection = self.collection_var.get()
+        if selected_collection:
+            collection_path = os.path.join(self.collection_folder, selected_collection)
+            try:
+                with open(collection_path, 'r') as collection_file:
+                    lines = collection_file.readlines()
+                    num_games = len(lines)
+                    self.collection_count_label.config(text=f"Number of Games: {num_games}")
+            except FileNotFoundError:
+                self.collection_count_label.config(text="Number of Games: N/A")
 
     def search_and_update_collection(self):
         selected_collection = self.collection_var.get()
@@ -85,21 +107,31 @@ class CustomCollectionGenerator:
         except FileNotFoundError:
             pass  # Collection file might not exist yet
 
-        with open(collection_path, 'a') as collection_file:
-            for root, dirs, files in os.walk(self.roms_folder):
-                for file in files:
-                    if file.endswith(tuple(extensions)) and keyword.lower() in file.lower():
-                        # Use relative path with forward slashes and ./ before roms/
-                        rom_path = os.path.relpath(os.path.join(root, file), self.root_folder).replace("\\", "/")
-                        if f"./{rom_path}" not in existing_lines:
-                            collection_file.write(f"./{rom_path}\n")
-                            existing_lines.add(f"./{rom_path}")
+        # Get the total number of files to search
+        total_files = sum(len(files) for _, _, files in os.walk(self.roms_folder))
 
-        # Rewrite the collection file to remove duplicates and sort lines alphabetically
-        with open(collection_path, 'w') as collection_file:
-            collection_file.writelines(sorted(line + "\n" for line in existing_lines))
+        self.progress_bar['value'] = 0
+        self.progress_bar['maximum'] = total_files
 
-        messagebox.showinfo("Success", f"Collection '{selected_collection}' updated successfully.")
+        def search_files():
+            with tqdm(total=total_files, desc='Searching ROMs', unit='file(s)', ascii=True) as pbar:
+                with open(collection_path, 'a') as collection_file:
+                    for root, dirs, files in os.walk(self.roms_folder):
+                        for file in files:
+                            if file.endswith(tuple(extensions)) and keyword.lower() in file.lower():
+                                # Use relative path with forward slashes and ./ before roms/
+                                rom_path = os.path.relpath(os.path.join(root, file), self.root_folder).replace("\\", "/")
+                                game_name = os.path.splitext(os.path.basename(file))[0]
+                                if "MultiDisc" not in rom_path and f"./{rom_path}" not in existing_lines:
+                                    collection_file.write(f"./{rom_path}\n")
+                                    existing_lines.add(f"./{rom_path}")
+                                pbar.update(1)
+                                self.progress_bar['value'] += 1
+            self.progress_bar['value'] = 0
+            self.update_collection_count()
+            messagebox.showinfo("Success", f"Collection '{selected_collection}' updated successfully.")
+
+        Thread(target=search_files).start()
 
     def create_new_collection(self):
         new_collection_name = self.new_collection_entry.get()
